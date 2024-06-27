@@ -5,14 +5,13 @@ on:
     branches:
       - master
   push:
-    branches:
-      - master
 
 jobs:
   test-prepare-binaries:
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         os: [linux]
         arch: [ amd64, arm64 ]
@@ -20,10 +19,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Prepare
-        run: |
-          make scripts/iptables-wrapper-installer.sh
 
       - name: Docker meta
         id: meta
@@ -49,3 +44,5 @@ jobs:
           labels: "${{ steps.meta.outputs.labels }}"
           build-args: |
             ARCH="${{ matrix.arch }}"
+
+      - run: make test
