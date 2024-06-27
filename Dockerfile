@@ -1,58 +1,70 @@
-FROM registry.suse.com/bci/bci-base:15.6
+ARG BCI_VERSION=15.6
 
-ARG ARCH=amd64
+FROM registry.suse.com/bci/bci-busybox:${BCI_VERSION} AS final
+FROM registry.suse.com/bci/bci-base:${BCI_VERSION} AS builder
 
-COPY scripts/hyperkube /hyperkube
-COPY scripts/iptables-wrapper /usr/sbin/iptables-wrapper
+# original contents of the final image.
+RUN mkdir /chroot
+COPY --from=final / /chroot/
 
-# Adapted from: https://github.com/kubernetes/kubernetes/blob/v1.18.6/build/debian-hyperkube-base/Dockerfile
-RUN ln -s /hyperkube /apiserver \
- && ln -s /hyperkube /cloud-controller-manager \
- && ln -s /hyperkube /controller-manager \
- && ln -s /hyperkube /kubectl \
- && ln -s /hyperkube /kubelet \
- && ln -s /hyperkube /proxy \
- && ln -s /hyperkube /scheduler
+COPY scripts/hyperkube /chroot/hyperkube
+COPY scripts/iptables-wrapper /chroot/usr/sbin/iptables-wrapper
 
-# The samba-common, cifs-utils, and nfs-common packages depend on
-# ucf, which itself depends on /bin/bash.
-# RUN echo "dash dash/sh boolean false" | debconf-set-selections
 
+# The final image does not contain zypper, --installroot is used to
+# install all artefacts within a dir (/chroot) that can then be copied
+# over to a scratch image.
 RUN rpm --import https://packages.microsoft.com/keys/microsoft.asc && \
     zypper addrepo --name 'Azure CLI' --check https://packages.microsoft.com/yumrepos/azure-cli azure-cli && \
+    zypper --non-interactive refresh &&  \
+    zypper --non-interactive --installroot /chroot install --from azure-cli --no-recommends azure-cli
+
+
+RUN rpm --import https://download.opensuse.org/repositories/filesystems/SLE_15_SP5/repodata/repomd.xml.key && \
+    zypper addrepo https://download.opensuse.org/repositories/filesystems/SLE_15_SP5/filesystems.repo && \
     zypper --non-interactive refresh && \
-    zypper -n install \
-      arptables \
+    zypper --non-interactive --installroot /chroot install --from filesystems --no-recommends  zfs glusterfs
+    
+    
+    # ceph-common
+
+RUN zypper --non-interactive --installroot /chroot install --no-recommends \
+      # arptables \
       dash \
-      # ceph-common \
-      cifs-utils \
+      # cifs-utils \
       conntrack-tools \
-      e2fsprogs \
-      xfsprogs \
+      # e2fsprogs \
+      # xfsprogs \
       ebtables \
       ethtool \
-      git \
-      # glusterfs \
-      iproute2 \
+      git-core \
+      # iproute2 \
       ipset \
-      iptables \
+      # iptables \
       iputils \
       jq \
-      kmod \
+      # kmod \
       lsb-release \
-      open-iscsi \
-      openssh-clients \
-      nfs-client \
-      samba-client \
+      # openssh-clients \
+      # open-iscsi \
+      # nfs-client \
+      # samba-client \
       socat \
-      udev \
-      xfsprogs \
-      # zfsutils-linux \
-      && \
-    zypper -n install --from azure-cli --no-recommends \
-      azure-cli && \
-    zypper -n clean -a && \
-    rm -rf /tmp/* /var/tmp/* /usr/share/doc/packages/* /usr/lib/sysimage/rpm/*.db
+      # udev \
+      xfsprogs
+
+RUN zypper --installroot /chroot clean -a && \
+    rm -rf /chroot/var/cache/zypp/* /chroot/var/log/zypp/* /chroot/etc/zypp/ /chroot/usr/lib/sysimage/rpm/*.db
+
+# iptables-wrapper-installer.sh uses `iptables-nft --version` to check whether iptables-nft exists, iptables-nft returns
+# the error "protocol not supported" when being invoked in an emulated enviroment whose arch (for example, arm64)
+# is different from the host (amd64). So we do the check ourselves before running iptables-wrapper-installer.sh.
+RUN which iptables-legacy && which iptables-nft
+
+
+FROM scratch
+
+COPY --from=builder /chroot /
 
 RUN update-alternatives \
     --install /usr/sbin/iptables iptables /usr/sbin/iptables-legacy 10 \
@@ -76,9 +88,13 @@ RUN update-alternatives \
     --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/iptables-wrapper \
     --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/iptables-wrapper
 
-# iptables-wrapper-installer.sh uses `iptables-nft --version` to check whether iptables-nft exists, iptables-nft returns
-# the error "protocol not supported" when being invoked in an emulated enviroment whose arch (for example, arm64)
-# is different from the host (amd64). So we do the check ourselves before running iptables-wrapper-installer.sh.
-RUN which iptables-legacy && which iptables-nft
+# Adapted from: https://github.com/kubernetes/kubernetes/blob/v1.18.6/build/debian-hyperkube-base/Dockerfile
+RUN ln -s /hyperkube /apiserver \
+ && ln -s /hyperkube /cloud-controller-manager \
+ && ln -s /hyperkube /controller-manager \
+ && ln -s /hyperkube /kubectl \
+ && ln -s /hyperkube /kubelet \
+ && ln -s /hyperkube /proxy \
+ && ln -s /hyperkube /scheduler
 
 ENTRYPOINT ["/hyperkube"]
